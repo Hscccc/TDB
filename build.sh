@@ -9,7 +9,7 @@ CMAKE_COMMAND="cmake -DCMAKE_EXPORT_COMPILE_COMMANDS=1 --log-level=STATUS"
 
 ALL_ARGS=("$@")
 BUILD_ARGS=()
-MAKE_ARGS=(-j 4)
+MAKE_ARGS=(-j4)
 
 echo "$0 ${ALL_ARGS[@]}"
 

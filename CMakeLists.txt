@@ -3,6 +3,12 @@ set(CMAKE_CXX_STANDARD 20)
 
 project(TDB)
 
+SET(CMAKE_INSTALL_RPATH_USE_LINK_PATH TRUE)
+SET(CMAKE_BUILD_WITH_INSTALL_RPATH TRUE)
+
+# 假设 jsoncpp 安装在 /usr/local/lib（你也可以换成自己的路径）
+SET(CMAKE_INSTALL_RPATH "/usr/local/lib")
+
 MESSAGE(STATUS "This is Project source dir " ${PROJECT_SOURCE_DIR})
 MESSAGE(STATUS "This is PROJECT_BINARY_DIR dir " ${PROJECT_BINARY_DIR})
 

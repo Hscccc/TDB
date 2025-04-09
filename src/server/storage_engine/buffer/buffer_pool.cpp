@@ -218,6 +218,22 @@ RC FileBufferPool::flush_page_internal(Frame &frame)
 //  3. 写入数据到文件的目标位置
 //  4. 清除frame的脏标记
 //  5. 记录和返回成功
+  Page &page = frame.page();
+
+  int64_t offset = ((int64_t)frame.page_num()) * BP_PAGE_SIZE;
+
+  if(lseek(file_desc_, offset, SEEK_SET) == -1) {
+    LOG_ERROR("Failed to flush page %s:%d, due to failed to lseek:%s.", file_name_.c_str(), frame.page_num(), strerror(errno));
+    return RC::IOERR_SEEK;
+  }
+
+  if(write(file_desc_, &page, BP_PAGE_SIZE) != BP_PAGE_SIZE) {
+    LOG_ERROR("Failed to flush page %s:%d, due to failed to write:%s.", file_name_.c_str(), frame.page_num(), strerror(errno));
+    return RC::IOERR_WRITE;
+  }
+
+  frame.clear_dirty();
+
   return RC::SUCCESS;
 }
 
@@ -246,6 +262,15 @@ RC FileBufferPool::flush_all_pages()
  */
 RC FileBufferPool::evict_page(PageNum page_num, Frame *buf)
 {
+  std::scoped_lock lock_guard(lock_);
+  if(buf->dirty()) {
+    RC rc = flush_page_internal(*buf);
+    if(rc != RC::SUCCESS) {
+      LOG_ERROR("Failed to flush page %s:%d during eviction, rc=%s", file_name_.c_str(), page_num, strrc(rc));
+      return rc;
+    }
+  }
+  frame_manager_.free(file_desc_, page_num, buf);
   return RC::SUCCESS;
 }
 /**
@@ -253,7 +278,16 @@ RC FileBufferPool::evict_page(PageNum page_num, Frame *buf)
  */
 RC FileBufferPool::evict_all_pages()
 {
-  return RC::SUCCESS;
+  std::scoped_lock lock_guard(lock_);
+  RC rc = RC::SUCCESS;
+  for(Frame *frame : frame_manager_.find_list(file_desc_)) {
+    RC evict_rc = evict_page(frame->page_num(), frame);
+    if(evict_rc != RC::SUCCESS) {
+      LOG_ERROR("Failed to evict page %s:%d, rc=%s", file_name_.c_str(), frame->page_num(), strrc(evict_rc));
+      rc = evict_rc;
+    }
+  }
+  return rc;
 }
 
 /**
@@ -517,7 +551,13 @@ RC BufferPoolManager::close_file(const char *_file_name)
  */
 RC BufferPoolManager::flush_page(Frame &frame)
 {
-  return RC::SUCCESS;
+  std::scoped_lock lock_guard(lock_);
+  auto it = fd_buffer_pools_.find(frame.file_desc());
+  if (it == fd_buffer_pools_.end()) {
+    LOG_ERROR("failed to find buffer pool for file desc %d", frame.file_desc());
+    return RC::INTERNAL;
+  }
+  return it->second->flush_page(frame);
 }
 
 static BufferPoolManager *default_bpm = nullptr;

@@ -90,7 +90,30 @@ RC BplusTreeIndex::close()
  */
 RC BplusTreeIndex::insert_entry(const char *record, const RID *rid)
 {
-  // TODO [Lab2] 增加索引项的处理逻辑
+  // Extract the key from the record based on the multi_field_metas_
+  std::vector<const char *> keys;
+  for (const auto &field_meta : multi_field_metas_) {
+    keys.push_back(record + field_meta.offset());
+  }
+
+  // the index is unique and the key already exists
+  if (index_meta_.is_unique()) {
+    std::list<RID> existing_rid;
+    RC rc = index_handler_.get_entry(keys.data(), existing_rid, multi_field_metas_.size());
+    if (rc == RC::SUCCESS) {
+      LOG_WARN("Duplicate key found for unique index. Insert failed.");
+      return RC::RECORD_DUPLICATE_KEY;
+    }
+  }
+
+  // Insert the key and RID into the B+ tree
+  RC rc = index_handler_.insert_entry(keys.data(), rid, multi_field_metas_.size());
+  if (rc != RC::SUCCESS) {
+    LOG_WARN("Failed to insert entry into B+ tree. rc=%s", strrc(rc));
+    return rc;
+  }
+
+  LOG_INFO("Successfully inserted entry into B+ tree.");
   return RC::SUCCESS;
 }
 
@@ -100,7 +123,19 @@ RC BplusTreeIndex::insert_entry(const char *record, const RID *rid)
  */
 RC BplusTreeIndex::delete_entry(const char *record, const RID *rid)
 {
-  // TODO [Lab2] 增加索引项的处理逻辑
+  // Extract the key from the record based on the multi_field_metas_
+  std::vector<const char *> keys;
+  for (const auto &field_meta : multi_field_metas_) {
+    keys.push_back(record + field_meta.offset());
+  }
+
+  // Delete the key and RID from the B+ tree
+  RC rc = index_handler_.delete_entry(keys.data(), rid, multi_field_metas_.size());
+  if (rc != RC::SUCCESS) {
+    LOG_WARN("Failed to delete entry from B+ tree. rc=%s", strrc(rc));
+    return rc;
+  }
+  LOG_INFO("Successfully deleted entry from B+ tree.");
   return RC::SUCCESS;
 }
 

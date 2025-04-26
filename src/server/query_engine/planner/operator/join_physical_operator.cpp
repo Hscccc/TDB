@@ -30,6 +30,11 @@ RC JoinPhysicalOperator::open(Trx *trx)
     children_[0]->close();
     return rc;
   }
+
+  rc = children_[0]->next();
+  if (rc != RC::SUCCESS) {
+    left_is_empty = true;
+  }
   
   return RC::SUCCESS;
 }
@@ -56,72 +61,40 @@ RC JoinPhysicalOperator::next()
   if (children_.size() != 2) {
     return RC::INTERNAL;
   }
-  
-  if (children_[0]->next() != RC::SUCCESS) {
-    return RC::RECORD_EOF;  // 左表没有更多记录
-  }  
-  
-  PhysicalOperator *left_oper = children_[0].get();
-  PhysicalOperator *right_oper = children_[1].get();
-  
-  // 检查左表当前是否有记录，如果没有直接返回RECORD_EOF
-  if (left_oper->current_tuple() == nullptr) {
+
+  if (left_is_empty) {
     return RC::RECORD_EOF;
   }
   
-  RC rc;
-  
-  // 循环直到找到满足条件的记录或没有更多记录
   while (true) {
-    // 尝试获取右子树的下一条记录
-    rc = right_oper->next();
+    Tuple *left_tuple = children_[0]->current_tuple();
     
-    // 如果右子树已经到达末尾，需要获取左子树的下一条记录，并重置右子树
-    if (rc != RC::SUCCESS) {
-      right_oper->close();
+    while (children_[1]->next() == RC::SUCCESS) {
+      Tuple *right_tuple = children_[1]->current_tuple();
       
-      // 获取左子树的下一条记录
-      rc = left_oper->next();
-      if (rc != RC::SUCCESS) {
-        // 左子树也已经到达末尾，整个连接操作完成
-        return RC::RECORD_EOF;
-      }
+      // 进行连接
+      joined_tuple_.set_left(left_tuple);
+      joined_tuple_.set_right(right_tuple);
       
-      // 重新打开右子树
-      rc = right_oper->open(trx_);
-      if (rc != RC::SUCCESS) {
-        return rc;
-      }
-      
-      // 获取右子树的第一条记录
-      rc = right_oper->next();
-      if (rc != RC::SUCCESS) {
-        // 右子树为空，继续下一个左子树记录
-        // 由于右表为空，内连接结果也为空，继续循环
-        continue;
+      // 检查连接条件
+      if (match_condition()) {
+        return RC::SUCCESS;
       }
     }
     
-    // 获取左右子树的当前元组
-    Tuple *left_tuple = left_oper->current_tuple();
-    Tuple *right_tuple = right_oper->current_tuple();
-    
-    // 确保两个tuple都有效
-    if (left_tuple == nullptr || right_tuple == nullptr) {
-      continue;
+    // 重置右子树
+    children_[1]->close();
+    children_[1]->open(trx_);
+
+    if (children_[0]->next() != RC::SUCCESS) {
+      // 左子树已经遍历完毕
+      children_[0]->close();
+      children_[1]->close();
+      return RC::RECORD_EOF;
     }
-    
-    // 设置连接元组
-    joined_tuple_.set_left(left_tuple);
-    joined_tuple_.set_right(right_tuple);
-    
-    // 检查是否满足连接条件
-    if (match_condition()) {
-      // 找到满足条件的记录，返回成功
-      return RC::SUCCESS;
-    }
-    
   }
+
+  return RC::RECORD_EOF;
 }
 
 RC JoinPhysicalOperator::close()

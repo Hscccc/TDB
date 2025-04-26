@@ -25,6 +25,7 @@ private:
   bool match_condition();
 
 private:
+  bool left_is_empty = false;
   Trx *trx_ = nullptr;
   JoinedTuple joined_tuple_;  //! 当前关联的左右两个tuple
   std::unique_ptr<Expression> condition_; //! join条件表达式

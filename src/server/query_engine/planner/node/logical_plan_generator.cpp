@@ -102,17 +102,63 @@ RC LogicalPlanGenerator::plan_node(
   // 1. Table scan node
   //TODO [Lab3] 当前只取一个表作为查询表,当引入Join后需要考虑同时查询多个表的情况
   //参考思路: 遍历tables中的所有Table，针对每个table生成TableGetLogicalNode
-   Table *default_table = tables[0];
-   const char *table_name = default_table->name();
-   std::vector<Field> fields;
-   for (auto *field : all_fields) {
-     if (0 == strcmp(field->table_name(), default_table->name())) {
-       fields.push_back(*field);
-     }
-   }
+  if (tables.size() == 1) {
+    // 单表查询处理
+    Table *default_table = tables[0];
+    const char *table_name = default_table->name();
+    std::vector<Field> fields;
+    for (auto *field : all_fields) {
+      if (0 == strcmp(field->table_name(), default_table->name())) {
+        fields.push_back(*field);
+      }
+    }
 
-   root = std::unique_ptr<LogicalNode>(
-       new TableGetLogicalNode(default_table, select_stmt->table_alias()[0], fields, true/*readonly*/));
+    root = std::unique_ptr<LogicalNode>(
+        new TableGetLogicalNode(default_table, select_stmt->table_alias()[0], fields, true/*readonly*/));
+  } else {
+    // 多表查询处理
+    std::vector<std::unique_ptr<LogicalNode>> table_nodes;
+    
+    // 为每个表创建一个TableGetLogicalNode
+    for (size_t i = 0; i < tables.size(); i++) {
+      Table *table = tables[i];
+      const std::string &table_alias = select_stmt->table_alias()[i];
+      
+      std::vector<Field> fields;
+      for (auto *field : all_fields) {
+        if (0 == strcmp(field->table_name(), table->name()) || 
+            (!table_alias.empty() && 0 == strcmp(field->table_name(), table_alias.c_str()))) {
+          fields.push_back(*field);
+        }
+      }
+      
+      table_nodes.push_back(std::unique_ptr<LogicalNode>(
+          new TableGetLogicalNode(table, table_alias, fields, true/*readonly*/)));
+    }
+    
+    // 创建JOIN节点把表连接起来
+    root = std::move(table_nodes[0]);
+    
+    for (size_t i = 1; i < table_nodes.size(); i++) {
+      auto join_node = std::make_unique<JoinLogicalNode>();
+      
+      join_node->add_child(std::move(root));
+      join_node->add_child(std::move(table_nodes[i]));
+      
+      // 设置连接条件
+      if (select_stmt->join_filter_stmts().size() >= i) {
+        auto join_filter = select_stmt->join_filter_stmts()[i-1];
+        if (join_filter != nullptr) {
+          auto conjunction_expr = _transfer_filter_stmt_to_expr(join_filter);
+          if (conjunction_expr != nullptr) {
+            join_node->set_condition(std::move(conjunction_expr));
+          }
+        }
+      }
+      
+      root = std::move(join_node);
+    }
+  }
 
   // 2. inner join node
   // TODO [Lab3] 完善Join节点的逻辑计划生成, 需要解析并设置Join涉及的表,以及Join使用到的连接条件

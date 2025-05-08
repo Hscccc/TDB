@@ -114,7 +114,19 @@ MvccTrx::MvccTrx(MvccTrxManager &kit, int32_t trx_id) : trx_kit_(kit), trx_id_(t
 RC MvccTrx::insert_record(Table *table, Record &record)
 {
   RC rc = RC::SUCCESS;
-  // TODO [Lab4] 需要同学们补充代码实现记录的插入，相关提示见文档
+
+  Field begin_xid_field, end_xid_field;
+  trx_fields(table, begin_xid_field, end_xid_field);
+
+  begin_xid_field.set_int(record, -trx_id_);
+  end_xid_field.set_int(record, trx_kit_.max_trx_id());
+
+  // Insert the record into the table
+  rc = table->insert_record(record);
+  if (rc != RC::SUCCESS) {
+    LOG_WARN("failed to insert record into table. rc=%s", strrc(rc));
+    return rc;
+  }
 
   pair<OperationSet::iterator, bool> ret = operations_.insert(Operation(Operation::Type::INSERT, table, record.rid()));
   if (!ret.second) {
@@ -127,7 +139,17 @@ RC MvccTrx::insert_record(Table *table, Record &record)
 RC MvccTrx::delete_record(Table *table, Record &record)
 {
   RC rc = RC::SUCCESS;
-  // TODO [Lab4] 需要同学们补充代码实现逻辑上的删除，相关提示见文档
+
+  rc = visit_record(table, record, false/*readonly*/);
+  if (rc != RC::SUCCESS) {
+    LOG_WARN("failed to update record for logical deletion. rc=%s", strrc(rc));
+    return rc;
+  }
+
+  Field begin_xid_field, end_xid_field;
+  trx_fields(table, begin_xid_field, end_xid_field);
+
+  end_xid_field.set_int(record, -trx_id_);
 
   operations_.insert(Operation(Operation::Type::DELETE, table, record.rid()));
   return rc;
@@ -144,10 +166,28 @@ RC MvccTrx::delete_record(Table *table, Record &record)
  */
 RC MvccTrx::visit_record(Table *table, Record &record, bool readonly)
 {
-  RC rc = RC::SUCCESS;
-  // TODO [Lab4] 需要同学们补充代码实现记录是否可见的判断，相关提示见文档
+  Field begin_xid_field, end_xid_field;
+  trx_fields(table, begin_xid_field, end_xid_field);
 
-  return rc;
+  int32_t begin_xid = begin_xid_field.get_int(record);
+  int32_t end_xid = end_xid_field.get_int(record);
+
+  if (begin_xid < 0) {
+    if (begin_xid != -trx_id_) {
+      return RC::RECORD_INVISIBLE;
+    }
+  } else if (end_xid < 0) {
+    if (!readonly) return RC::LOCKED_CONCURRENCY_CONFLICT;
+    if (end_xid == -trx_id_) {
+      return RC::RECORD_INVISIBLE;
+    }
+  } else {
+    if (begin_xid > trx_id_ || (end_xid != trx_kit_.max_trx_id() && end_xid <= trx_id_)) {
+      return RC::RECORD_INVISIBLE;
+    }
+  }
+
+  return RC::SUCCESS;
 }
 
 RC MvccTrx::start_if_need()

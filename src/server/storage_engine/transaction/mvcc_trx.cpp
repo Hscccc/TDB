@@ -132,7 +132,18 @@ RC MvccTrx::insert_record(Table *table, Record &record)
   if (!ret.second) {
     rc = RC::INTERNAL;
     LOG_WARN("failed to insert operation(insertion) into operation set: duplicate");
+    return rc;
   }
+
+  // 追加插入日志
+  if (!recovering_ && log_manager_ != nullptr) {
+    rc = log_manager_->append_record_log(LogEntryType::INSERT, trx_id_, table->table_id(), record.rid(), record.len(), 0, record.data());
+    if (rc != RC::SUCCESS) {
+      LOG_ERROR("failed to append insert record log. rc=%s", strrc(rc));
+      return rc;
+    }
+  }
+  
   return rc;
 }
 
@@ -151,7 +162,22 @@ RC MvccTrx::delete_record(Table *table, Record &record)
 
   end_xid_field.set_int(record, -trx_id_);
 
-  operations_.insert(Operation(Operation::Type::DELETE, table, record.rid()));
+  pair<OperationSet::iterator, bool> ret = operations_.insert(Operation(Operation::Type::DELETE, table, record.rid()));
+  if (!ret.second) {
+    rc = RC::INTERNAL;
+    LOG_WARN("failed to insert operation(deletion) into operation set: duplicate");
+    return rc;
+  }
+
+  // 追加删除日志
+  if (!recovering_ && log_manager_ != nullptr) {
+    rc = log_manager_->append_record_log(LogEntryType::DELETE, trx_id_, table->table_id(), record.rid(), record.len(), 0, record.data());
+    if (rc != RC::SUCCESS) {
+      LOG_ERROR("failed to append delete record log. rc=%s", strrc(rc));
+      return rc;
+    }
+  }
+
   return rc;
 }
 
@@ -337,8 +363,28 @@ RC MvccTrx::redo(Db *db, const LogEntry &log_entry)
     case LogEntryType::INSERT: {
       Table *table = nullptr;
       const RecordEntry &record_entry = log_entry.record_entry();
+      
+      table = db->find_table(record_entry.table_id_);
+      if (table == nullptr) {
+        LOG_ERROR("failed to find table while redo. table id=%d", record_entry.table_id_);
+        return RC::INTERNAL;
+      }
 
-      // TODO [Lab5] 需要同学们补充代码，相关提示见文档
+      Field begin_xid_field, end_xid_field;
+      trx_fields(table, begin_xid_field, end_xid_field);
+      
+      Record record;
+      record.set_rid(record_entry.rid_);
+      record.set_data_owner(record_entry.data_ + record_entry.data_offset_, record_entry.data_len_);
+      
+      begin_xid_field.set_int(record, -trx_id_);
+      end_xid_field.set_int(record, trx_kit_.max_trx_id());
+
+      RC rc = table->recover_insert_record(record);
+      if (rc != RC::SUCCESS) {
+        LOG_ERROR("failed to redo insert record. rc=%s", strrc(rc));
+        return rc;
+      }
 
       operations_.insert(Operation(Operation::Type::INSERT, table, record_entry.rid_));
     } break;
@@ -347,20 +393,45 @@ RC MvccTrx::redo(Db *db, const LogEntry &log_entry)
       Table *table = nullptr;
       const RecordEntry &record_entry = log_entry.record_entry();
 
-      // TODO [Lab5] 需要同学们补充代码，相关提示见文档
+      table = db->find_table(record_entry.table_id_);
+      if (table == nullptr) {
+        LOG_ERROR("failed to find table while redo. table id=%d", record_entry.table_id_);
+        return RC::INTERNAL;
+      }
+
+      Record record;
+      record.set_rid(record_entry.rid_);
+      record.set_data_owner(record_entry.data_ + record_entry.data_offset_, record_entry.data_len_);
+
+      Field begin_xid_field, end_xid_field;
+      trx_fields(table, begin_xid_field, end_xid_field);
+      end_xid_field.set_int(record, -trx_id_);
+      
+      // Create a visitor function to mark the record as logically deleted
+      auto record_updater = [this, &end_xid_field](Record &record) {
+        end_xid_field.set_int(record, -trx_id_);
+      };
+      
+      // Visit the record and update it (logical deletion)
+      RC rc = table->visit_record(record_entry.rid_, false/*readonly*/, record_updater);
+      if (rc != RC::SUCCESS) {
+        LOG_ERROR("failed to redo delete record. rid=%s, rc=%s", record_entry.rid_.to_string().c_str(), strrc(rc));
+        return rc;
+      }
 
       operations_.insert(Operation(Operation::Type::DELETE, table, record_entry.rid_));
     } break;
 
     case LogEntryType::MTR_COMMIT: {
 
-      // TODO [Lab5] 需要同学们补充代码，相关提示见文档
+      int32_t commit_xid = log_entry.commit_entry().commit_xid_;
+      commit_with_trx_id(commit_xid);
 
     } break;
 
     case LogEntryType::MTR_ROLLBACK: {
 
-      // TODO [Lab5] 需要同学们补充代码，相关提示见文档
+      rollback();
 
     } break;
 
